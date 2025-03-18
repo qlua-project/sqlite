@@ -659,6 +659,7 @@ TEST_CCONV_OPTS =
 #
 !IFNDEF CORE_COMPILE_OPTS
 !IF $(DYNAMIC_SHELL)!=0 || $(FOR_WIN10)!=0
+# !IF $(DYNAMIC_SHELL)!=0
 CORE_COMPILE_OPTS = $(CORE_CCONV_OPTS) -DSQLITE_API=__declspec(dllexport)
 !ELSE
 CORE_COMPILE_OPTS = $(CORE_CCONV_OPTS)
@@ -693,7 +694,8 @@ CORE_LINK_OPTS =
 # These are additional compiler options used for the shell executable.
 #
 !IFNDEF SHELL_COMPILE_OPTS
-!IF $(DYNAMIC_SHELL)!=0 || $(FOR_WIN10)!=0
+# !IF $(DYNAMIC_SHELL)!=0 || $(FOR_WIN10)!=0
+!IF $(DYNAMIC_SHELL)!=0
 SHELL_COMPILE_OPTS = $(SHELL_CCONV_OPTS) -DSQLITE_API=__declspec(dllimport)
 !ELSE
 SHELL_COMPILE_OPTS = $(SHELL_CCONV_OPTS)
@@ -704,7 +706,8 @@ SHELL_COMPILE_OPTS = $(SHELL_CCONV_OPTS)
 # with.
 #
 !IFNDEF SHELL_CORE_SRC
-!IF $(DYNAMIC_SHELL)!=0 || $(FOR_WIN10)!=0
+# !IF $(DYNAMIC_SHELL)!=0 || $(FOR_WIN10)!=0
+!IF $(DYNAMIC_SHELL)!=0
 SHELL_CORE_SRC =
 # <<mark>>
 !ELSEIF $(USE_AMALGAMATION)==0
@@ -718,7 +721,8 @@ SHELL_CORE_SRC = $(SQLITE3C)
 # This is the core library that the shell executable should depend on.
 #
 !IFNDEF SHELL_CORE_DEP
-!IF $(DYNAMIC_SHELL)!=0 || $(FOR_WIN10)!=0
+# !IF $(DYNAMIC_SHELL)!=0 || $(FOR_WIN10)!=0
+!IF $(DYNAMIC_SHELL)!=0
 SHELL_CORE_DEP = $(SQLITE3DLL)
 # <<mark>>
 !ELSEIF $(USE_AMALGAMATION)==0
@@ -741,7 +745,8 @@ TESTFIXTURE_DEP = zlib $(TESTFIXTURE_DEP)
 # This is the core library that the shell executable should link with.
 #
 !IFNDEF SHELL_CORE_LIB
-!IF $(DYNAMIC_SHELL)!=0 || $(FOR_WIN10)!=0
+# !IF $(DYNAMIC_SHELL)!=0 || $(FOR_WIN10)!=0
+!IF $(DYNAMIC_SHELL)!=0
 SHELL_CORE_LIB = $(SQLITE3LIB)
 # <<mark>>
 !ELSEIF $(USE_AMALGAMATION)==0
@@ -1752,7 +1757,8 @@ FUZZDATA = \
 # Additional compiler options for the shell.  These are only effective
 # when the shell is not being dynamically linked.
 #
-!IF $(DYNAMIC_SHELL)==0 && $(FOR_WIN10)==0
+# !IF $(DYNAMIC_SHELL)==0 && $(FOR_WIN10)==0
+!IF $(DYNAMIC_SHELL)==0
 SHELL_COMPILE_OPTS = $(SHELL_COMPILE_OPTS) -DSQLITE_DQS=0
 SHELL_COMPILE_OPTS = $(SHELL_COMPILE_OPTS) -DSQLITE_ENABLE_FTS4=1
 SHELL_COMPILE_OPTS = $(SHELL_COMPILE_OPTS) -DSQLITE_ENABLE_EXPLAIN_COMMENTS=1
