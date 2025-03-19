@@ -1,0 +1,54 @@
+User-visible changes to tkwintrack in between releases:
+
+--- 24-Dec-2020  Release 1.0b1 ---
+
+* Remember settings per client application
+* Indicate the client interpreter in the configuration dialog
+* Add wintrackgui icon to the title bar
+* Add a (hidden) about frame
+* Some lay-out improvements of the config dialog
+
+--- 24-Feb-2021  Release 1.1.0 ---
+
+* Rename the package to tkwintrack
+* (bug fix) pathname widget background colour doesn't adapt on MS Windows
+* (bug fix) file format of icon (window manager decoration) doesn't support
+  Tk8.5
+* Make test script configurable from command line only, using option -wtune
+  with default value 1.0
+* Add tests for reconfigure actions to test script
+* Enhance documentation, notably regarding the test script
+
+--- 8-Jul-2021  Release 2.0.0 ---
+
+* (bug fix) reckon with file system path names containing spaces
+
+--- 10-Jul-2021  Release 2.0.1 ---
+
+* (enhancement) employ enhanced detection mechanism provided by windetect 2.0
+* (enhancement) allow lifting restriction to execute on unsupported platforms
+* (bug fix) prevent error when the outline widget is destroyed by the client
+  application
+* (bug fix) prevent error when toggling off detection functionality if
+  the outlined window has been destroyed
+* (bug fix) correct check for Tk version requirement
+* (test enhancement) use gui-integration tests from package windetect 2.0
+* (test enhancement) make tests insensitive to variability among windowing
+  systems and window managers w.r.t. timeliness of event notifications,
+  thereby considerably speeding up test execution.
+* (test enhancement) remove test option -wtune, obsoleted by the previous
+  enhancement, and add test option -eyefriendly.
+* Various documentation improvements.
+
+--- 17-Sep-2024  Release 2.1.0 ---
+
+* (bug fix) prevent error when destroying toplevel for tracked window during cfg
+  dialog display (#3)
+* (doc fix) add test option -nowm to the list of supported options (#4)
+* (test bugfix) correct test aboutbox-1.1 with tk9.0.0 under x11 (#5)
+* (bug fix) correct slow display of config dialog when the client interp frame
+  is over the mouse pointer upon mapping (#6)
+* (bug fix) correct initial display of pathname widget when option "follow mouse"
+  was deselected (#7)
+
+--- 22-Dec-2024  Release 2.1.1 ---

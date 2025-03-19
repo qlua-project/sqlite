@@ -1,0 +1,2 @@
+if {![package vsatisfies [package provide Tcl] 9.0]} {return}
+package ifneeded ankh 1.1 "[list proc __critcl_load__ {dir} { ;     source [file join $dir critcl-rt.tcl] ;     set path [file join $dir [::critcl::runtime::MapPlatform]] ;     set ext [info sharedlibextension] ;     set lib [file join $path "ankh$ext"] ;     load $lib Ankh ;     ::critcl::runtime::Fetch $dir policy_1.tcl ;     package provide ankh 1.1 ;     catch {rename __critcl_load__ {}}}] ; [list __critcl_load__ $dir]"

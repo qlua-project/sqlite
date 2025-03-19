@@ -1,0 +1,183 @@
+#! /bin/sh
+# If executed as a shell script, the next line replaces the shell \
+exec tclsh "$0" ${1+"$@"}
+
+#
+# Estimates a useful value for the option -wsrespite, based on latency
+# values exhibited by the windetect gui-integration tests that involve
+# the window manager (i.e. toplevel crossings).
+#
+
+#
+# Copyright 2020 Erik Leunissen
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+# determine execution environment
+proc getScriptDir {} {
+	set fileName [info script]
+	if {$fileName eq ""} {
+		return -code error "Called [info level 0] outside the active invocation of a script."
+	}
+	while {! [catch {file readlink $fileName} result]} {
+		if {[file pathtype $result] ne "absolute"} {
+			set fileName [file  join [file dirname $fileName] $result]
+		} else {
+			set fileName $result
+		}
+	}
+	return [file dirname [file normalize $fileName]]
+}
+set scriptDir [getScriptDir]
+
+# handle arguments
+set options [list outfile "" showraw 0 showstat 0]
+foreach {key value} $options {
+	set $key $value
+}
+set usage "Usage: [info script] ?-outfile filename? ?-showraw? ?-showstat?"
+if {$argc > 4} {
+	puts stderr $usage
+	exit 1
+}
+if {$argc > 0} {
+	set i -1
+	set outfile_pos -1
+	foreach arg $argv {
+		incr i
+		switch -- $arg {
+			"-outfile" {
+				set outfile_pos [expr {$i+1}]
+				set outfile [lindex $argv $outfile_pos]
+			}
+			"-showraw" {
+				if {$i == $outfile_pos} {
+					puts stderr $usage
+					exit 11
+				}
+				set showraw 1
+			}
+			"-showstat" {
+				if {$i == $outfile_pos} {
+					puts stderr $usage
+					exit 12
+				}
+				set showstat 1
+			}
+			default {
+				if {$i != $outfile_pos} {
+					puts stderr $usage
+					exit 13
+				}
+			}
+		}
+	}
+}
+if {$outfile ne ""} {
+	set showstat 1
+}
+
+# load required packages
+package require Tk
+wm withdraw .
+source [file join $scriptDir osshell.tcl]
+set osshell(ws) [tk windowingsystem]
+set osshell(wm) [osshell::info wm name]
+set osshell(de) [osshell::info de name]
+set osshell(all) $osshell(ws).$osshell(wm).$osshell(de)
+
+# get test output
+#
+# Setting the option -verbose to t, produces one line in the output before
+# a test is run. This line shows the test name.
+#
+catch {exec [info nameofexecutable] [file join $scriptDir .. test windetect-gui.test] -skipintro -wmonly -verbose t -detectiondetails -timing} output
+
+#
+# Retrieve and analyse latency data.
+#
+# - Each mouse pointer transition is in a separate line.
+# - What counts for windetect is the time interval between the first <Leave>
+#   or <Destroy> event and the last subsequent <Enter> event in a mouse pointer
+#   transition.
+#
+set N 0
+foreach line [split $output \n] {
+	if {[regexp {^---- (.+) start$} $line -- name]} {
+		continue
+	}
+	if {! [regexp -- {^(?:<[2-9])?\|\*:\d+\|<(?:Leave|Destroy)>(.+)<Enter>} $line -- subStr]} {
+		continue
+	}
+
+	# We have a mouse pointer transition. Now, subStr holds all time intervals
+	# except the first. Extract them into a list.
+	set dtList [regexp -all -inline -- {:\d+} $subStr]
+
+	# sum them to obtain the total latency
+	set latency 0
+	foreach el $dtList {
+		incr latency [string range $el 1 end]
+	}
+
+	# prepare descriptive statistics
+	lappend data [list $latency $name]
+	incr cumul $latency
+	incr N
+}
+
+set data [lsort -integer -index 0 $data]
+set max [lindex [lindex $data end] 0]
+if {$showstat} {
+	# compute min, average and stddev
+	set min [lindex [lindex $data 0] 0]
+	set average [expr {$cumul/$N}]
+	foreach entry $data {
+		set latency [lindex $entry 0]
+		incr cumul_dev_squared [expr {($latency-$average)**2}]
+	}
+	set stddev [expr {sqrt($cumul_dev_squared/$N)}]
+}
+
+# file output
+if {$outfile eq ""} {
+	# stdout
+	if {$showraw} {
+		puts "Raw latency observations, sorted (microseconds):"
+		puts [join $data \n]\n
+	}
+	if {$showstat} {
+		puts "Descriptive statistics (latency values in microseconds):"
+		puts "N       = $N"
+		puts "Min     = $min"
+		puts "Max     = $max"
+		puts [format "Average = %.3g" $average]
+		puts [format "Stddev  = %.3g" $stddev]\n
+	}
+
+	puts "Recommendation for option -wsrespite (milliseconds): [expr {round(ceil($max/1000.0))}]\
+	\nThis recommendation holds for the present computer system with current system load, using the following graphical platform:\n- windowing system    : $osshell(ws)\n- window manager      : $osshell(wm)\n- desktop environment : $osshell(de)"
+} else {
+	set new [expr {! [file isfile $outfile]}]
+	set fd [open $outfile a]
+	if {$new} {
+		puts $fd "tk platform\tmin\tmax\taverage\tstddev (microseconds)"
+	}
+	puts $fd "$osshell(all)\t$min\t$max\t[format "%.3g" $average]\t[format "%.3g" $stddev]"
+	close $fd
+}
+
+exit 0
+
+# EOF

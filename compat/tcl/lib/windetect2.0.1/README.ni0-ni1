@@ -1,0 +1,24 @@
+Code variants ni0 and ni1
+=========================
+
+Windetect is adapted to two Tk variants that differ with respect to 
+Tk's handling of binding scripts for crossing events with detail field
+NotifyInferior:
+
+  ni0: Tk skips mentioned binding scripts.
+       Last Tk release: 8.6.14
+
+  ni1: Tk invokes mentioned binding scripts
+       First Tk releases: 8.6.15 and 9.0.0
+
+These different behaviours lead to different crossing events received, which
+is something that windetect's detection mechanism - as well as tests - need to
+adapt to. Windetect determines which Tk variant is currently executing, and
+selects the appropriate code/path where needed.
+
+This leads to distinct paths of execution at a few places in the Tcl code,
+marked with the identifiers ni0/ni1, and to separate test scripts for the
+gui-integration tests: "test/gui_tests-ni0.tcl" and "test/gui_tests-ni1.tcl".
+
+More information about the distinction is available in ticket #47d4f29159 in
+the Tk source code repository.

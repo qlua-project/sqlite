@@ -1,0 +1,1113 @@
+#! /bin/sh
+# If executed as a shell script, the next line replaces the shell \
+exec tclsh "$0" ${1+"$@"}
+
+#
+# This test script holds tests that exercise the behaviour of tkwintrack. It
+# employs the gui-integration tests that come with package windetect. Package
+# windetect ought be installed alongside package tkwintrack.
+#
+# Clicking mouse buttons and moving the mouse pointer around the GUI are
+# simulated with programmatically generated events.
+#
+
+#
+# Copyright 2020 Erik Leunissen
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+#================== TEST SETUP ============================================
+
+#
+# DETERMINE TEST CONTEXT
+#
+proc getScriptDir {} {
+	set scriptname [info script]
+	if {$scriptname eq ""} {
+		return -code error "Called [info level 0] outside the active invocation of a script."
+	}
+	return [file dirname [file normalize $scriptname]]
+}
+
+# directory names, and cd into test dir
+set Dir(test) [getScriptDir]
+set Dir(install) [file dirname $Dir(test)]
+cd $Dir(test)
+
+
+#
+# GENERIC TEST INITALIZATION/CONFIGURATION
+#
+source [file join $Dir(test) windetect-gui-prologue.tcl]
+source [file join $Dir(test) tkwintrack-test_utils.tcl]
+
+tcltest::enableOutputFromInterp -auto
+
+# Use a clean base directory for the config file, to ensure that we
+# don't read any existing tkwintrack configuration file.
+
+if {[package vcompare $tcl_version 9.0] < 0} {
+	set homeDir [file normalize ~]
+} else {
+	set homeDir [file home]
+}
+set Generic(cfgBaseDir) [file join $homeDir tmp.tkwintrack_test]
+file delete -force $Generic(cfgBaseDir)
+file mkdir $Generic(cfgBaseDir)
+set Generic(cfgBaseDirNames) [list]
+foreach name {APPDATA LOCALAPPDATA HOME} {
+	if {[info exists env($name)]} {
+		lappend Generic(cfgBaseDirNames) $name
+		set env($name) $Generic(cfgBaseDir)
+	}
+}
+unset name homeDir
+
+#
+# Prevent that [package require tkwintrack] inadvertently
+# loads a version of tkwintrack installed elsewhere.
+#
+package forget tkwintrack
+set Generic(auto_path.orig) $auto_path
+set auto_path [list $Dir(install)]
+
+
+#
+# TEST CONSTRAINTS
+#
+setTestConstraintConditionally bug_Tcl_6235d23a76 \
+		[expr {($tcl_platform(platform) ne "windows") || ! [isBugVersion tcl {} {}]}]
+
+#================== TESTS NOT USING A GUI =====================================
+
+#
+# REQUIREMENT ERRORS
+#
+test init-1.1 {package require fails if Tk is not loaded} -setup {
+	set tkVersion [package present Tk]
+	package forget Tk
+	set result {}
+} -body {
+	lappend result [catch {package require -exact tkwintrack $Generic(pkgVersion)} errMsg]
+	lappend result $errMsg
+	lappend result [namespace exists ::tkwintrack]
+} -cleanup {
+	package provide Tk $tkVersion
+	unset -nocomplain errMsg result tkVersion
+} -result [list 1 "tkwintrack requires a running Tk application" 0]
+
+test init-1.2 {package require fails with too old Tk version} -setup {
+	set tkVersion [package present Tk]
+	package forget Tk
+	package provide Tk 8.4
+	set result {}
+} -body {
+	lappend result [catch {package require -exact tkwintrack $Generic(pkgVersion)} errMsg]
+	lappend result $errMsg
+	lappend result [namespace exists ::tkwintrack]
+} -cleanup {
+	package forget Tk
+	package provide Tk $tkVersion
+	unset -nocomplain errMsg result tkVersion
+} -result [list 1 "tkwintrack $Generic(pkgVersion) requires Tk 8.5 or newer" 0]
+
+#
+# Nrs. 1.50 and beyond are used for tests that may be removed in a newer version
+#
+
+test init-1.50 {package require fails with unsupported windowing system} -setup {
+	rename tk _tk
+	proc tk {args} {
+		if {[lindex $args 0] eq "windowingsystem"} {
+			return "any_unsupported_ws"
+		}
+		return [_tk {*}$args]
+	}
+} -body {
+	lappend result [catch {package require -exact tkwintrack $Generic(pkgVersion)} errMsg]
+	lappend result $errMsg
+	lappend result [namespace exists ::tkwintrack]
+} -cleanup {
+	rename tk {}
+	rename _tk tk
+	unset result errMsg
+} -result [list 1 "tkwintrack $Generic(pkgVersion) does not support the windowing system \"any_unsupported_ws\"" 0]
+
+test init-1.51 {bypass ws restriction for unsupported windowing systems} -setup {
+	rename tk _tk
+	proc tk {args} {
+		if {[lindex $args 0] eq "windowingsystem"} {
+			return "any_unsupported_ws"
+		}
+		return [_tk {*}$args]
+	}
+	if {[info exists env(WINDETECT_NO_RESTRICT_WS)]} {
+		set sav(env) $env(WINDETECT_NO_RESTRICT_WS)
+	}
+	set env(WINDETECT_NO_RESTRICT_WS) 1
+} -body {
+	lappend result [catch {package require -exact tkwintrack $Generic(pkgVersion)} errMsg]
+	lappend result $errMsg
+	lappend result [package present tkwintrack]
+} -cleanup {
+	package forget tkwintrack
+	after cancel [lindex [after info] 0]; # "interp eval tkwintrack init" was scheduled
+	interp delete tkwintrack
+	namespace delete ::tkwintrack
+	if {[info exists sav(env)]} {
+		set env(WINDETECT_NO_RESTRICT_WS) $sav(env)
+	} else {
+		unset env(WINDETECT_NO_RESTRICT_WS)
+	}
+	rename tk {}
+	rename _tk tk
+	unset -nocomplain errMsg sav result
+} -result [list 0 $Generic(pkgVersion) $Generic(pkgVersion)] -errorOutput "WARNING: bypassing ws restriction on explicit user request (WINDETECT_NO_RESTRICT_WS)\n"
+
+
+#================== TESTS REQUIRING A TEST GUI ================================
+
+#
+# SETUP FOR TESTS REQUIRING A TEST GUI
+#
+
+#
+# Restore the original auto_path, otherwise package Tk may complain about
+# not finding the tk_library, and in the tests following, the package
+# windetect may not be found again after its own call to [package forget]
+# upon the repeatedly called tkwintrack::exit.
+#
+set auto_path $Generic(auto_path.orig)
+
+#
+# Verify up front that the require windetect version is installed and loadable
+# to prevent that [with_cfgDialog] generates a background error which may be
+# perceived as confusing.
+#
+catch {package require _non_existent_package}; # Ensure that the full package database is created.
+                                               # Beware: an alien tkwintrack may sneak into the database.
+package forget tkwintrack; # remove any tkwintrack installations
+set fd [open [file join $Dir(install) tkwintrack.tcl]]
+set txt [read $fd]
+close $fd
+regexp -- {package require windetect ([.ab0-9]+)} $txt -- windetectMinVersion
+set found 0
+foreach version [package versions windetect] {
+	if {[package vsatisfies $version $windetectMinVersion]} {
+		set found 1
+		break
+	}
+}
+if {! $found} {
+	# Abort test execution.
+	puts stderr "error: package windetect $windetectMinVersion is not in the current auto_path:\n\t$Generic(auto_path.orig)\nTest script execution aborted."
+	exit 1
+}
+unset fd found txt windetectMinVersion
+
+# base window setup for the tests in this test file
+wm geometry . 200x200+300+300
+pack propagate . 0
+wm deiconify .
+tkwait visibility .
+# Ensure that the display server has finished communicating with Tk, and
+# that all window events have been serviced, i.o.w. redraw is completed.
+update
+
+
+#
+# PACKAGE LOADING AND REMOVAL
+#
+test init-2.1 {package require provides package} -setup {
+	package forget tkwintrack; # prevent aliens from getting loaded
+	set auto_path [list $Dir(install)]
+} -body {
+	package require tkwintrack
+} -cleanup {
+	interp eval tkwintrack {
+		after 0 {set TkWintrack(dlgChoice) "exit"}
+	}
+	while {! [catch {package present tkwintrack}]} {
+		twait 1
+	}
+	set auto_path $Generic(auto_path.orig)
+} -result $Generic(pkgVersion)
+
+test init-2.2 {config dialog displays upon launch, and pathname widget is created} -body {
+	with_cfgDialog on_pkg_load exit {
+		list [winfo ismapped $TkWintrack(cfgFrame)] [winfo exists $TkWintrack(pnWidget)]
+	}
+} -result {1 1}
+
+test exit-1.1 {by clicking the exit button} -setup {
+	catch {tkwintrack::exit}
+} -body {
+	with_cfgDialog on_pkg_load exit {}
+	# check whether all package related objects are destroyed
+	list [bind TkWintrackOutline] [bind TkWintrackOutlineTop] [interp exists tkwintrack] [namespace exists ::tkwintrack] [catch {package present tkwintrack}]
+} -result {{} {} 0 0 1}
+
+test config_dlg-1.1 {right-clicking the pathname widget} -setup {
+	setup-button_continue
+	waitForReporting.init
+	pointer_move . c
+	waitForReporting
+} -body {
+	with_cfgDialog on_pnw_click exit {
+		list [winfo ismapped $TkWintrack(cfgFrame)] [winfo ismapped $TkWintrack(pnWidget)]
+	}
+} -result {1 0}
+
+test mainwin-1.1 {position of dialog relative to main window} -setup {
+	#
+	# Tkwintrack presumes a stacking window manager (not a tiling one!), which
+	# honours our geometry requests. Otherwise, all bets are off.
+	# We account for the width of the wm decorative border and allow a margin
+	# of 10 pixels to both sides of the requested position in the horizontal.
+	#
+
+	# determine the width of the left (and right) wm decorative border for toplevel windows
+	regexp -- {\d\+(\d+)\+} [wm geometry .] dummy wm_x
+	set bd [expr {[winfo rootx .] -$wm_x}]
+} -body {
+	#
+	# A. root win unmapped, no other windows exist
+	#    Use the already existing root win setup, just withdraw it.
+	#
+	wm withdraw .
+
+	# fetch the x coordinate of the config dialog (load package tkwintrack and continue)
+	set x [with_cfgDialog on_pkg_load continue {
+		winfo rootx .
+	}]
+	incr x -$bd; # correct for width of the wm border
+	set result [expr {($x > 390) && ($x < 410)}]
+
+	#
+	# B. large root win unmapped, smaller child toplevel mapped
+	#
+	waitForReporting.init noUpdate
+	toplevel .small -width 100 -height 100
+	wm geometry .small +520+300
+	wm deiconify .small
+	if {[applyWmAccommodations Fluxbox KWin]} {
+		#
+		# These window managers send many more VisibiltyNotify and Expose
+		# events than just one, as other wm's do.
+		#
+		twait 10
+	} else {
+		tkwait visibility .small
+	}
+	update
+	pointer_move .small c
+	waitForReporting; # [A2], see [A1]
+
+	# fetch the x coordinate of the config dialog (use simulated click and continue)
+	set x [with_cfgDialog on_pnw_click continue {
+		winfo rootx .
+	}]
+	update
+	set x [expr {$x - 2 * $bd}]; # correct for width of the wm border
+	lappend result [expr {($x > 560) && ($x < 580)}]
+
+	#
+	# C. large root win mapped + smaller child toplevel mapped
+	#
+	pointer_move .small c
+	if {([tk windowingsystem] eq "win32") && ! [interp eval tkwintrack {winfo ismapped $TkWintrack(pnLabel)}]} {
+		interp eval tkwintrack {tkwait visibility $TkWintrack(pnLabel)}
+	}
+	waitForReporting
+	wm deiconify .
+	tkwait visibility .; update
+
+	# fetch the x coordinate of the config dialog (use simulated click and exit)
+	set x [with_cfgDialog on_pnw_click exit {
+		winfo rootx .
+	}]
+	set x [expr {$x - 2 * $bd}]; # correct for width of the wm border
+	lappend result [expr {($x > 390) && ($x < 410)}]
+} -cleanup {
+	unset -nocomplain result bd dummy wm_x x
+	destroy .small
+} -result {1 1 1}
+
+#
+# CONFIGURATION FILE
+#
+test config_file-1.1 {relevant environment variables don't exist} -constraints bug_Tcl_6235d23a76 -setup {
+	foreach name $Generic(cfgBaseDirNames) {
+		set envSav($name) $env($name)
+		unset env($name)
+	}
+} -body {
+	with_cfgDialog on_pkg_load exit {set TkWintrack(outline,color)}
+} -cleanup {
+	foreach name $Generic(cfgBaseDirNames) {
+		set env($name) $envSav($name)
+	}
+	unset -nocomplain envSav name
+} -result #FF0000 -output "warning: cannot save/restore configuration because*the environment variable*exist*\n" -match glob
+
+test config_file-1.2 {the dirs referenced by env don't exist} -setup {
+	foreach name $Generic(cfgBaseDirNames) {
+		set envSav($name) $env($name)
+		set env($name) @nonexistent.$name@
+	}
+} -body {
+	# BEWARE:
+	# If this test is the first one executed (e.g. through a selection made with
+	# the tcltest option -match), a process related to fontconfig, triggered by
+	# the command below, creates any non-existing $env(HOME). The mechanism by
+	# which this is done is unclear to me [EL], especially why the directory
+	# isn't created if this test is not the first one executed.
+	# We need to delete any directories that may be created when cleaning up.
+	#
+	with_cfgDialog on_pkg_load exit {variable TkWintrack; set TkWintrack(outline,color)}
+} -cleanup {
+	foreach name $Generic(cfgBaseDirNames) {
+		set tmpVar $env($name)
+		set env($name) $envSav($name)
+		file delete -force $tmpVar
+	}
+	unset -nocomplain envSav name tmpVar
+} -result #FF0000 -output "warning: cannot save/restore configuration because no writable location was found in *\n" -match glob
+
+test config_file-1.3 {home dir not writable} -constraints {unix notRoot} -setup {
+	file attributes $env(HOME) -permissions u-w
+} -body {
+	with_cfgDialog on_pkg_load exit {set TkWintrack(outline,color)}
+} -cleanup {
+	file attributes $env(HOME) -permissions u+w
+} -result #FF0000 -output "warning: cannot save/restore configuration because no writable location was found in *\n" -match glob
+
+test config_file-2.1 {config file exceeds size limit} -setup {
+	set str [string repeat "Too large for tkwintrack\n" 300]
+	set configFile [getConfigFile]
+	set fd [open $configFile w]
+	puts $fd $str
+	close $fd
+} -body {
+	with_cfgDialog on_pkg_load exit {set TkWintrack(outline,color)}
+} -cleanup {
+	file delete $configFile
+	unset -nocomplain configFile fd str
+} -result #FF0000 -output "warning: size of the config file * exceeded the allowed maximum (5000 bytes). Will continue using defaults.\n" -match glob
+
+test config_file-2.2 {disregard rubbish in config file} -setup {
+	set configFile [getConfigFile]
+	set fd [open $configFile w]
+	puts $fd "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+	close $fd
+} -body {
+	with_cfgDialog on_pkg_load exit {set TkWintrack(outline,color)}
+} -cleanup {
+	file delete $configFile
+	unset -nocomplain configFile fd
+} -result #FF0000 -output {}
+
+test config_file-2.3 {config file save/restore ok} -body {
+	set configFile [with_cfgDialog on_pkg_load exit {
+		set TkWintrack(outline,color) #AAAAAA
+		set TkWintrack(config,fileName)
+	}]
+	set fileSize [file size $configFile]
+	lappend result [with_cfgDialog on_pkg_load exit {set TkWintrack(outline,color)}]
+	lappend result [expr {[file size $configFile~] == $fileSize}]
+	set result
+} -cleanup {
+	file delete $configFile
+	unset -nocomplain fileSize configFile result
+} -result [list #AAAAAA 1] -output {}
+
+test config_file-2.4 {support old wintrackgui config file, read ok} -setup {
+	set configFile [with_cfgDialog on_pkg_load exit {
+		set index [lsearch $TkWintrack(config,optionNames) outline,color]
+		set TkWintrack(config,optionNames) [lreplace $TkWintrack(config,optionNames) $index $index outlineColor]
+		set index [lsearch $TkWintrack(config,optionNames) outline,width]
+		set TkWintrack(config,optionNames) [lreplace $TkWintrack(config,optionNames) $index $index outlineWidth]
+		array unset TkWintrack outline,*
+		set TkWintrack(outlineColor) #BBBBBB
+		set TkWintrack(outlineWidth) 4
+		set TkWintrack(config,fileName)
+	}]
+	set oldConfigFile [file join $env(HOME) wintrackgui.conf]
+	file rename $configFile $oldConfigFile
+} -body {
+	set result [with_cfgDialog on_pkg_load exit {list $TkWintrack(outline,color) $TkWintrack(outline,width)}]
+} -cleanup {
+	file delete $configFile $oldConfigFile
+	unset -nocomplain result configFile oldConfigFile
+} -result [list #BBBBBB 4]
+
+#
+# STANDARD GUI INTEGRATION TESTS THAT COME WITH WINDETECT
+#
+
+# window setup
+window_setup gui
+setup-button_continue; # load tkwintrack
+
+# initialize reporting
+waitForReporting.init
+
+# loading tkwintrack has moved the mouse pointer from its initial position.
+# Restore it
+pointer_move . c
+waitForReporting
+# Ensure that the display server has finished communicating with Tk, and
+# that all window events have been serviced, i.o.w. redraw is completed.
+update
+
+set windetectVersion [package present windetect]
+set Dir(windetect) [file dirname [lindex [package ifneeded windetect $windetectVersion] 1]]
+if {! $testconf(-skipintro)} {
+	puts [outputChannel] "\nUsing package windetect $windetectVersion installed at $Dir(windetect)\n"
+}
+unset windetectVersion
+
+if {$testconf(-detectiondetails) || $testconf(-timing)} {
+	puts <test_setup_done>\n
+}
+
+source [file join $Dir(windetect) test constraints.tcl]
+source [file join $Dir(windetect) test gui_tests-ni[tkWithNotifyInferior].tcl]
+
+#
+# TESTS INVOLVING THE OUTLINE WIDGET
+#
+test pointer_motion_outline-1.1 {Mouse pointer enters outline widget for toplevel and leaves the active client area from there} -body {
+	pointer_move . w
+	#
+	# This pointer motion induces a <Leave> event with detail NotifyInferior.
+	# With ni0, windetect doesn't notice it (Tk suppresses the binding scripts
+	# with detail field NotifyInferior). So there no detection event occurs.
+	# With ni1, the event is detected by windetect, but it doesn't invoke them
+	# reporting callback because it waits for the corresponding <Enter> event,
+	# but that doesn't arrive because the destination window is a special
+	# tkwintrack window that has been instrumented for detection by windetect
+	# for <Leave> events only (binding tag TkWintrackOutline, bindtag "all"
+	# is removed). Therefore, nothing triggers upon <Enter>.
+	#
+	# Long story short: in both cases the reporting times out.
+	#
+	if {[waitForReporting 1 1 0 10] != -1} {
+		error "timeout expected"
+	}; # ensure that no detection events are reported
+	record state(1,outline) outline .
+	record state(1,pnw) pnw
+	event generate . <Motion> -warp 1 -x -50 -y 100
+	waitForReporting 2; # needs long on my windows box
+	record state(2,outline) outline .
+	record state(2,pnw) pnw
+	concat $state(1,outline) $state(1,pnw) $state(2,outline) $state(2,pnw)
+} -cleanup {
+	pointer_move . c
+	waitForReporting 1 0 0
+	unset -nocomplain state result
+} -result [list 1,pnw: pnw.pathname . 2,outline: outline.none 2,pnw: pnw.unmapped]
+
+test pointer_motion_outline-1.2 {Mouse motion into a single pixel window in the outline area
+	#
+	# A window, smaller than the outline width, positioned within the outline
+	# area of its container window window, cannot be detected when the mouse pointer
+	# comes from inside its container window, because the outline is covering it entirely.
+	#
+	# When coming from outside its container window, detection is possible and the
+	# outline widget will be moved to the single pixel window. This scenario is
+	# what this test exercises.
+	#
+	# NOTE: this test exhibits endless detection events when -delay is set to zero
+	# (an invalid value for tkwintrack anyway).
+	#
+} -setup {
+	.f1.f2 configure -width 1 -height 1
+	pack .f1.f2 -side bottom -anchor c
+	pack .f1
+	update idletasks
+} -body {
+	pointer_move .f1.f2 c
+	#
+	# Explanation of the detection dynamics for this quite complicated case on X11:
+	#   1. (detection) mouse pointer enters .f1
+	#   2. (detection) mouse pointer enters .f1.f2
+	#   3. (reporting) takes place
+	waitForReporting [expr {[tkWithNotifyInferior]?3:2}] 0 0; # don't let the outline and pnw reposition here
+
+	#   NOTES:
+	#     - the outline widget is moved from . to .f1.f2 and the mouse pointer
+	#       suddenly finds itself in the single pixel outline widget.
+	#     - entering an outline frame doesn't generate detection events, because
+	#       the outline frames have been not been bound to <Enter> events.
+	#     - however, to enter an outline frame, you need to leave another one
+	#       because all of them are not a child of another outline frame.
+	#     - stacking order of outline frames (from lowest to topmost) in that
+	#       single pixel: top - left - right - bottom
+	#       However, when traversing the geometry hierarchy, it appears that
+	#       the left frame is skipped (not entered and not left), possibly because
+	#       the right frame is [place]'d after the left frame has been [place]'d.
+	#       We don't care about that per se, but it is one window event less that
+	#       Tk services, which suits us fine. So we get:
+	#   4. (detection) <Leave> .f1.f2
+	#   5. (detection) <Leave> .f1
+	#   6. <Enter> top outline frame (no detection)
+	#   7. (detection) <Leave> top outline frame (no detection with ni1)
+	#   8. <Enter> right outline frame (no detection)
+	#   9. (detection) <Leave> right outline frame (no detection with ni1)
+	#   10. <Enter> bottom outline frame (no detection)
+	#
+	#   Total detection events for tkwintrack: [expr {[tkWithNotifyInferior]?0:4}]
+	#
+	# 	foreach side {top left right bottom} {
+	# 		puts "|slaves of $::tkwintrack::Outline($side): [place slaves $::tkwintrack::Outline($side)]|"
+	# 	}
+	# 	puts "|pointer window: [getPointerWin]|"
+	# 	puts "|stacking order for outline frames: [winfo children .]|"
+	#
+	# However, under win32 the top, left and right outline frames are all ignored. I can't explain this.
+	#
+	# Both windowing systems exhibit inexplicable aspects, win32 many more than
+	# x11. But we don't mind about that as long as the expected result is
+	# obtained. Therefore, we don't pass a specific count of detection events to
+	# [waitForReporting] below.
+	#
+	if {[tkWithNotifyInferior]} {
+		update
+	} else {
+		waitForReporting * 0 0
+	}
+	record state(1,outline) outline .f1.f2
+	record state(1,pnw) pnw; # pointerWin = .tkwintrack_outline_bottom
+
+	pointer_move . c
+	waitForReporting; # ni0: <Leave> .tkwintrack_outline_bottom
+	                  # ni1: <Enter> .
+	record state(2,outline) outline .
+	record state(2,pnw) pnw
+	concat $state(1,outline) $state(1,pnw) $state(2,outline) $state(2,pnw)
+} -cleanup {
+	pack forget .f1.f2 .f1
+	.f1.f2 configure -width 30 -height 30
+	update idletasks
+	unset -nocomplain state
+} -result {1,pnw: pnw.pathname .f1.f2}
+
+test pointer_motion_outline-1.3 {Mouse pointer enters its container window via the outline widget} -setup {
+	pack .f1
+	update idletasks
+	pointer_move .f1 c
+	waitForReporting [expr {[tkWithNotifyInferior]?2:1}]
+	# move the mouse into the outline frame, pnw remains unchanged
+	pointer_move .f1 s
+	if {[tkWithNotifyInferior]} {
+		update
+	} else {
+		waitForReporting 1 0 0
+	}
+} -body {
+	pointer_move . c
+	waitForReporting
+	record state(outline) outline .
+	record state(pnw) pnw
+	concat $state(outline) $state(pnw)
+} -cleanup {
+	pack forget .f1
+	update idletasks
+	unset -nocomplain state
+} -result {}
+
+test outline_destroy-1.1 {destruction of the outline widget while the config dialog is displayed, SF bug #3} -setup {
+	toplevelTwo map movePointerIntoTwo; # generate outline for toplevel .two
+	pointer_move . c
+	waitForReporting 2
+	proc ::bgerror.new {args} {
+		set ::result [lindex $args 0]
+	}
+	interp alias tkwintrack bgerror.new {} bgerror.new
+	interp bgerror tkwintrack ::bgerror.new
+	set result {}
+} -body {
+	after 100 {destroy .two}
+	with_cfgDialog on_pnw_click continue {
+		twait 200
+	}
+	twait 10
+	set result
+} -cleanup {
+	toplevelTwo create
+	if {$result ne ""} {
+		# 
+		# The bug causes the following background error:
+		#
+		#     invalid command name ".two.tkwintrack_outline_top"
+		#
+		# The background error corrupts bindings in tkwintrack, so we need to
+		# reload.
+		#
+		setup-button_continue
+		waitForReporting.init
+	}
+	pointer_move . c
+	waitForReporting
+	unset -nocomplain result
+} -result {}
+
+#
+# TESTS INVOLVING THE PATHNAME WIDGET
+#
+test pointer_motion_pnw-1.1 {Entering and leaving the pathname widget, no grab} -body {
+	interp eval tkwintrack {pointer_move $TkWintrack(pnLabel) c}
+	waitForReporting 1 0 0
+	record state(1,outline) outline .
+	record state(1,pnw) pnw
+	record state(1,pnwGeom) pnwGeom
+	interp eval tkwintrack {pointer_move $TkWintrack(pnWidget) w out}
+	waitForReporting 1 0 0; # see the comment in [::tkwintrack::detect on]
+	record state(2,outline) outline .
+	record state(2,pnw) pnw
+	record state(2,pnwGeom) pnwGeom
+	concat $state(1,outline) $state(1,pnw) $state(2,outline) $state(2,pnw) [expr {($state(1,pnwGeom) eq $state(2,pnwGeom))}]
+} -cleanup {
+	pointer_move . c
+	unset -nocomplain state
+} -result [list 1,pnw: pnw.pathname . 1]
+
+test pointer_motion_pnw-1.2 {Leaving the pathname widget for the area outside the client GUI} -body {
+	interp eval tkwintrack {pointer_move $TkWintrack(pnLabel) c}
+	waitForReporting 1 0 0
+	record state(1,outline) outline .
+	record state(1,pnw) pnw
+	record state(1,pnwGeom) pnwGeom
+	event generate . <Motion> -warp 1 -x -20 -y 100 -when now
+	controlPointerWarpTiming
+	waitForReporting 1 0 0; # see the comment in [::tkwintrack::detect on]
+	record state(2,outline) outline .
+	record state(2,pnw) pnw
+	record state(2,pnwGeom) pnwGeom
+	concat $state(1,outline) $state(1,pnw) $state(2,outline) $state(2,pnw) [expr {($state(1,pnwGeom) eq $state(2,pnwGeom))}]
+} -cleanup {
+	pointer_move . c
+	waitForReporting
+	unset -nocomplain state
+} -result [list 1,pnw: pnw.pathname . 2,outline: outline.none 2,pnw: pnw.unmapped 1]
+
+test pointer_motion_pnw-1.3 {Entering and leaving the pathname widget, with grab} -constraints bug_Tk_e3888d5820 -setup {
+	grab .
+} -body {
+	interp eval tkwintrack {pointer_move $TkWintrack(pnLabel) c}
+	waitForReporting 1 0 0
+	record state(1,outline) outline .
+	record state(1,pnw) pnw
+	record state(1,pnwGeom) pnwGeom
+	interp eval tkwintrack {pointer_move $TkWintrack(pnWidget) w out}
+	waitForReporting 1 0 0; # see the comment in [::tkwintrack::detect on]
+	record state(2,outline) outline .
+	record state(2,pnw) pnw
+	record state(2,pnwGeom) pnwGeom
+	concat $state(1,outline) $state(1,pnw) $state(2,outline) $state(2,pnw) [expr {($state(1,pnwGeom) eq $state(2,pnwGeom))}]
+} -cleanup {
+	grab release .
+	pointer_move . c
+	unset -nocomplain state
+} -result [list 1,pnw: pnw.pathname . 1]
+
+test pointer_motion_pnw-1.4 {Entering the pathname widget, and dragging it with the mouse} -constraints bug_Tk_e3888d5820 -body {
+	interp eval tkwintrack {pointer_move $TkWintrack(pnLabel) nw}
+	waitForReporting 1 0 0
+	record state(1,outline) outline .
+	record state(1,pnw) pnw
+	record state(1,pnwGeom) pnwGeom
+	set pnwWidth [interp eval tkwintrack {winfo width $TkWintrack(pnWidget)}]
+	set pnwHeight [interp eval tkwintrack {winfo height $TkWintrack(pnWidget)}]
+	set margin [interp eval tkwintrack {set margin 2}]
+
+	interp eval tkwintrack {
+		event generate $TkWintrack(pnLabel) <ButtonPress-1> -rootx [winfo pointerx .] -rooty [winfo pointery .] -when now
+		#
+		# Notes:
+		# a. the next command causes a wrong mouse pointer positioning if subject to Tk bug e3888d5820 ??
+		# b. don't move the pointer outside the pathname widget or else we get detection events that don't happen under real circumstances
+		#
+		event generate $TkWintrack(pnLabel) <B1-Motion> -warp 1 -x [expr {[winfo width $TkWintrack(pnLabel)]-$margin}] -y [expr {[winfo height $TkWintrack(pnLabel)]-$margin}] -when now
+	}
+	update; # enforce redraw of pnw
+	interp eval tkwintrack {
+		event generate $TkWintrack(pnLabel) <ButtonRelease> -rootx [winfo pointerx .] -rooty [winfo pointery .] -when now
+	}
+	record state(2,outline) outline .
+	record state(2,pnw) pnw
+	record state(2,pnwGeom) pnwGeom
+
+	foreach stage {1 2} {
+		scan $state($stage,pnwGeom) {%[x0-9]+%d+%d} size coords(x,$stage) coords(y,$stage)
+	}
+	concat $state(1,outline) $state(1,pnw) $state(2,outline) $state(2,pnw) [expr {$coords(x,2) - $coords(x,1) - $pnwWidth + $margin}] \
+			[expr {$coords(y,2) - $coords(y,1) - $pnwHeight + $margin}]
+} -cleanup {
+	pointer_move . c
+	waitForReporting 1 0 0
+	interp eval tkwintrack {
+		pnw.recall
+		unset margin
+	}
+	update; # enforce redraw of pnw
+	unset -nocomplain state size coords stage pnwWidth pnwHeight margin
+} -result [list 1,pnw: pnw.pathname . 2,pnw: pnw.pathname . 0 0]
+
+#
+# TESTS REGARDING KEYBOARD SHORTCUTS
+#
+# NOTE:
+# The tests in this section have been observed to fail with KWin
+# (the standard window manager for KDE) if the command [wm iconify .]
+# was executed earlier; e.g. from test pw_mapping-4.2 in the test file
+# gui-tests.tcl. Executing [wm iconify .] appears to prevent triggering
+# of bindings to the shortcut keys while the configured bindings themselves
+# remain intact. In case of such failure, running these tests in isolation
+# (from such other tests) lets them pass.
+#
+test shortcut_key-1.1 {toggle detection off/on} -setup {
+	assert {[interp eval tkwintrack {winfo ismapped $TkWintrack(pnWidget)}]}
+	set result [list]
+} -body {
+	#
+	# Has been observed to fail with x11.KWin.KDE; see the comment at
+	# the beginning of the section TESTS REGARDING KEYBOARD SHORTCUTS
+	#
+	event generate . <KeyPress-$::tkwintrack::TkWintrack(key,shortcutSeq,toggle)> -when now
+	lappend result [interp eval tkwintrack {winfo ismapped $TkWintrack(pnWidget)}]
+	event generate . <KeyPress-$::tkwintrack::TkWintrack(key,shortcutSeq,toggle)> -when tail
+	waitForReporting; # initial reporting after enabling detection
+	lappend result [interp eval tkwintrack {winfo ismapped $TkWintrack(pnWidget)}]
+} -cleanup {
+	unset -nocomplain result
+} -result {0 1}
+
+test shortcut_key-1.2 {toggle detection off/on, mouse pointer is outside the grab subtree} -setup {
+	pack .f1
+	update idletasks
+	grab .f1
+	waitForReporting 1 [expr {[tkWithNotifyInferior]?0:1}]
+	event generate . <KeyPress-$::tkwintrack::TkWintrack(key,shortcutSeq,toggle)> -when now
+} -body {
+	#
+	# Has been observed to fail with x11.KWin.KDE; see the comment at
+	# the beginning of the section TESTS REGARDING KEYBOARD SHORTCUTS
+	#
+	event generate . <KeyPress-$::tkwintrack::TkWintrack(key,shortcutSeq,toggle)> -when tail
+	if {[waitForReporting 0 0 0 10] != -1} {
+		error "timeout expected"
+	}; # ensure that no detection events are reported
+	record state(outline) outline .
+	record state(pnw) pnw
+	concat $state(outline) $state(pnw)
+} -cleanup {
+	grab release .f1
+	# With ni0 it takes some 10 ms for the <Enter> event to be serviced.
+	# Probably because of a slow [handleGrabTrace].
+	waitForReporting 1 [expr {[tkWithNotifyInferior]?0:1}]
+	pack forget .f1
+	update idletasks
+	unset -nocomplain state
+} -result {outline: outline.none pnw: pnw.unmapped}
+
+test shortcut_key-1.3 {toggle detection off/on inside the outline widget} -setup {
+	event generate . <Motion> -warp 1 -x 1 -y 100 -when now
+	controlPointerWarpTiming; # <Enter> the outline widget (this doesn't trigger a windetect detection event)
+} -body {
+	#
+	# Has been observed to fail with x11.KWin.KDE; see the comment at
+	# the beginning of the section TESTS REGARDING KEYBOARD SHORTCUTS
+	#
+	event generate . <KeyPress-$::tkwintrack::TkWintrack(key,shortcutSeq,toggle)> -when tail
+	waitForPnwUnmap; # Also withdraws the outline widget. This doesn't generate
+	                 # a detection event because detection functionality has
+	                 # just been toggled off.
+	record state(1,outline) outline .
+	record state(1,pnw) pnw
+	event generate . <KeyPress-$::tkwintrack::TkWintrack(key,shortcutSeq,toggle)> -when tail
+	waitForReporting; # capture initial reporting after enabling detection: <Enter> .
+	if {[tkWithNotifyInferior]} {
+		update; # With ni1, this leads to an extra <Leave> event on ".", which
+				# isn't reported since the destination window is the outline
+				# widget. We induce its servicing here so that it doesn't leak
+				# through to the next reporting.
+	}
+	record state(2,outline) outline .
+	record state(2,pnw) pnw; # pointer window is the outline widget (left frame), which is not what the pathname widget displays (of course)
+	concat $state(1,outline) $state(1,pnw) $state(2,outline) $state(2,pnw)
+} -cleanup {
+	pointer_move . c
+	waitForReporting [expr {[tkWithNotifyInferior]?2:1}] 0 0; # captures <Leave> event on the outline widget
+	interp eval tkwintrack pnw.recall
+	update; # enforce redraw of pnw
+	unset -nocomplain state
+} -result {1,outline: outline.none 1,pnw: pnw.unmapped 2,pnw: pnw.pathname .}
+
+test shortcut_key-2.1 {copy pathname to clipboard} -setup {
+	clipboard clear
+	update
+} -body {
+	#
+	# Has been observed to fail with x11.KWin.KDE; see the comment at
+	# the beginning of the section TESTS REGARDING KEYBOARD SHORTCUTS
+	#
+	event generate . <KeyPress-$::tkwintrack::TkWintrack(key,shortcutSeq,copy)> -when now
+	update
+	set result [clipboard get]
+} -cleanup {
+	unset -nocomplain result
+} -result "."
+
+test shortcut_key-3.1 {recall pathname widget} -setup {
+	event generate . <Motion> -warp 1 -x 50 -y 150 -when now
+	controlPointerWarpTiming
+} -body {
+	#
+	# Has been observed to fail with x11.KWin.KDE; see the comment at
+	# the beginning of the section TESTS REGARDING KEYBOARD SHORTCUTS
+	#
+	event generate . <KeyPress-$::tkwintrack::TkWintrack(key,shortcutSeq,recall)> -when tail
+	update; # enforce redraw of pnw
+	regexp -- {\+(\d+)\+(\d+)$} [interp eval tkwintrack {wm geometry $TkWintrack(pnWidget)}] dummy X Y
+	list [expr {[winfo pointerx .]-$X+5}] [expr {[winfo pointery .]-$Y-5-[interp eval tkwintrack {winfo reqheight $TkWintrack(pnWidget)}]}]
+} -cleanup {
+	pointer_move . c
+	interp eval tkwintrack pnw.recall
+	update; # enforce redraw of pnw
+	unset -nocomplain dummy X Y
+} -result {0 0}
+
+#
+# TESTS REGARDING RECONFIGURATION OF WIDGETS AND KEYBOARD SHORTCUTS
+#
+test reconfigure_outline-1.1 {outline width} -setup {
+	assert {[$::tkwintrack::Outline(top) cget -height] == 2}
+} -body {
+	with_cfgDialog on_pnw_click continue {
+		$TkWintrack(cfgFrame).outline,width_value set 5
+	}
+	pointer_move . c
+	waitForReporting
+	$::tkwintrack::Outline(top) cget -height
+} -cleanup {
+	::tkwintrack::config.prologue
+	interp eval tkwintrack config.reset
+	::tkwintrack::config.epilogue
+	waitForReporting 1 1; # initial reporting after enabling detection
+	::tkwintrack::outline.configure
+} -result 5
+
+test reconfigure_outline-1.2 {reset outline width} -setup {
+	with_cfgDialog on_pnw_click continue {
+		$TkWintrack(cfgFrame).outline,width_value set 5
+	}
+	pointer_move . c
+	waitForReporting
+	assert {[$::tkwintrack::Outline(top) cget -height] == 5}
+} -body {
+	eval [subst {with_cfgDialog on_pnw_click continue {
+		pointer_move \$TkWintrack(button_reset) c
+		if {[applyWmAccommodations Fluxbox]} {
+			twait 10
+		}
+		mouse_button left click
+	}}]
+	pointer_move . c
+	waitForReporting
+	$::tkwintrack::Outline(top) cget -height
+} -result 2
+
+test reconfigure_outline-1.3 {outline colour} -constraints unix -body {
+	lappend result [$::tkwintrack::Outline(top) cget -background]
+	with_cfgDialog on_pnw_click continue {
+		userSim.setColor outline,color #0000ff
+	}
+	pointer_move . c
+	waitForReporting
+	lappend result [$::tkwintrack::Outline(top) cget -background]
+} -cleanup {
+	#
+	# The outline sub-system affects the client as well as the private interp.
+	# We need to restore both.
+	#
+	::tkwintrack::config.prologue
+	interp eval tkwintrack config.reset
+	::tkwintrack::config.epilogue
+	waitForReporting 1 1; # initial reporting after enabling detection
+	unset -nocomplain result
+} -result [list #FF0000 #0000ff]
+
+test reconfigure_pnw-1.1 {pnw background} -constraints unix -body {
+	lappend result [interp eval tkwintrack {$TkWintrack(pnLabel) cget -background}]
+	with_cfgDialog on_pnw_click continue {
+		userSim.setColor pnw,background #ff00ff
+	}
+	pointer_move . c
+	waitForReporting
+	lappend result [interp eval tkwintrack {$TkWintrack(pnLabel) cget -background}]
+} -cleanup {
+	interp eval tkwintrack config.reset
+	unset -nocomplain result
+} -result [list lightyellow #ff00ff]
+
+test reconfigure_pnw-1.2 {pnw foreground + border} -constraints unix -body {
+	set result [interp eval tkwintrack {list [$TkWintrack(pnWidget) cget -background] [$TkWintrack(pnLabel) cget -foreground] [$TkWintrack(pnLabel) cget -highlightbackground]}]
+	with_cfgDialog on_pnw_click continue {
+		userSim.setColor pnw,foreground #00ff00
+	}
+	pointer_move . c
+	waitForReporting
+	#
+	# Beware that the string representation of the first of the appended list elements has an extra bracing level.
+	# This makes the use of [concat] a fragile operation. See also:
+	#
+	#	https://groups.google.com/g/comp.lang.tcl/c/V2aF5KvH3pY
+	#
+	# Revert to [list {*} ... ] instead.
+	#
+	list {*}$result {*}[interp eval tkwintrack {list [$TkWintrack(pnWidget) cget -background] [$TkWintrack(pnLabel) cget -foreground] [$TkWintrack(pnLabel) cget -highlightbackground]}]
+} -cleanup {
+	interp eval tkwintrack config.reset
+	unset -nocomplain result
+} -result [list black black black #00ff00 #00ff00 #00ff00]
+
+test reconfigure_pnw-1.3 {don't follow mouse} -setup {
+	pack .f1.f2
+	pack .f1
+	update idletasks
+} -body {
+	with_cfgDialog on_pnw_click continue {
+		pointer_move $TkWintrack(cfgFrame).pnw,followPointer_value c
+		mouse_button left click
+	}
+	pointer_move . c
+	waitForReporting
+	array set geom1 [interp eval tkwintrack {
+	    regexp -- {\+(\d+)\+(\d+)$} [wm geometry $TkWintrack(pnWidget)] dummy geom(rootx) geom(rooty)
+	    array get geom
+	}]
+	pointer_move .f1.f2 c
+	waitForReporting [expr {[tkWithNotifyInferior]?3:2}]
+	array set geom2 [interp eval tkwintrack {
+	    regexp -- {\+(\d+)\+(\d+)$} [wm geometry $TkWintrack(pnWidget)] dummy geom(rootx) geom(rooty)
+	    array get geom
+	}]
+	foreach name {rootx rooty} {
+		lappend result [expr {$geom2($name) == $geom1($name)}]
+	}
+	set result
+} -cleanup {
+	unset -nocomplain geom1 geom2 name result
+	pack forget .f1.f2 .f1
+	waitForReporting [expr {[tkWithNotifyInferior]?4:2}]
+	interp eval tkwintrack config.reset
+	pointer_move . c
+} -result {1 1}
+
+test reconfigure_kbd_shortcut-1.1 {toggle detection} -setup {
+	interp eval tkwintrack {
+		trace add execution shortcut.setSequence enter {scheduleKeyPress Q}
+	}
+} -body {
+	with_cfgDialog on_pnw_click continue {
+		pointer_move $TkWintrack(pnw,toggle) c
+		update
+	}
+	set ::tkwintrack::TkWintrack(key,shortcutSeq,toggle)
+} -cleanup {
+	pointer_move . c
+	waitForReporting
+	interp eval tkwintrack {
+		trace remove execution shortcut.setSequence enter {scheduleKeyPress Q}
+		config.reset
+	}
+} -result Q
+
+test reconfigure_kbd_shortcut-1.2 {copy pathname} -setup {
+	interp eval tkwintrack {
+		trace add execution shortcut.setSequence enter {scheduleKeyPress E}
+	}
+} -body {
+	with_cfgDialog on_pnw_click continue {
+		pointer_move $TkWintrack(pnw,copy) c
+		update
+	}
+	set ::tkwintrack::TkWintrack(key,shortcutSeq,copy)
+} -cleanup {
+	pointer_move . c
+	waitForReporting
+	interp eval tkwintrack {
+		trace remove execution shortcut.setSequence enter {scheduleKeyPress E}
+		config.reset
+	}
+} -result E
+
+test reconfigure_kbd_shortcut-1.3 {recall pathname widget} -setup {
+	interp eval tkwintrack {
+		trace add execution shortcut.setSequence enter {scheduleKeyPress D}
+	}
+} -body {
+	with_cfgDialog on_pnw_click continue {
+		pointer_move $TkWintrack(pnw,recall) c
+		update
+	}
+	set ::tkwintrack::TkWintrack(key,shortcutSeq,recall)
+} -cleanup {
+	interp eval tkwintrack config.reset
+	pointer_move . c
+	waitForReporting
+	interp eval tkwintrack {
+		trace remove execution shortcut.setSequence enter {scheduleKeyPress D}
+		config.reset
+	}
+} -result D
+
+test aboutbox-1.1 {unfold about box when pointer is over the hotspot, and withdraw when pointer is moved away} -body {
+	with_cfgDialog on_pnw_click continue {
+		pointer_move . c
+		lappend result [expr {[winfo rooty .about] + [winfo height .about] - [winfo rooty .]}]
+		lappend result [lsearch [winfo children $TkWintrack(cfgFrame)] $TkWintrack(hotspot)]
+		after 1000
+		pointer_move $TkWintrack(cfgFrame).clientInterp_name c
+		twait 1000; # opportunity for hotspot to raise
+		lappend result [expr {[lindex [winfo children $TkWintrack(cfgFrame)] end] eq $TkWintrack(hotspot)}]
+		pointer_move $TkWintrack(hotspot) c
+		twait 1000; # opportunity for about frame to unfold
+		after 1000
+		update; # enforce completion of geometry calculations under x11 (fix SF bug #5)
+		lappend result [expr {[winfo rooty .about] == [winfo rooty .]}]
+		pointer_move . c
+		twait 1000; # opportunity for about frame to retract
+		lappend result [expr {[winfo rooty .about] + [winfo height .about] - [winfo rooty .] < 0}]
+		set result
+	}
+} -cleanup {
+	pointer_move . c
+	waitForReporting
+	unset -nocomplain offset result
+} -result {0 0 1 1 1}
+
+#
+# END OF TESTS, clean up and show results
+#
+
+tkwintrack::exit
+file delete -force $Generic(cfgBaseDir)
+
+set rv [cleanupTests.return]
+exit $rv
+
+# EOF

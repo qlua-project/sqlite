@@ -1,0 +1,17 @@
+Package tclyaml 0.6
+Meta platform win32-x86_64
+Meta build::date 2025-01-03
+Meta build::require {critcl::class 1.0.3} {critcl::util 1}
+Meta generated::by {critcl 3.3.1} ashok
+Meta generated::date critcl
+Meta license Under a BSD license.
+Meta author {Andreas Kupries}
+Meta summary Binding to the libyaml parser/emitter library
+Meta description This package is a binding to the libyaml library. It
+Meta description exposes both parsing and writing functionality to Tcl.
+Meta subject yaml {parsing yaml} {emitting yaml} {writing yaml} parser
+Meta subject json serialization deserialization {data exchange format}
+Meta subject {transfer format}
+Meta require TclOO
+Meta included tcl/policy_1.tcl critcl-rt.tcl win32-x86_64/tclyaml.dll
+Meta entrytclcommand {eval "[list proc __critcl_load__ {dir} { ;     source [file join $dir critcl-rt.tcl] ;     set path [file join $dir [::critcl::runtime::MapPlatform]] ;     set ext [info sharedlibextension] ;     set lib [file join $path "tclyaml$ext"] ;     load $lib Tclyaml ;     ::critcl::runtime::Fetch $dir policy_1.tcl ;     package provide tclyaml 0.6 ;     catch {rename __critcl_load__ {}}}] ; [list __critcl_load__ $dir]"}

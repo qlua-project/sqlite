@@ -1,0 +1,577 @@
+#! /bin/sh
+# If executed as a shell script, the next line replaces the shell \
+exec tclsh "$0" ${1+"$@"}
+
+#
+# This test script invokes unit tests for package windetect, specifically
+# the regarding package loading, public procs, and procs that handle detection
+# events. It exercises the correct operation of these procs in isolation.
+# It doesn't exercise their behaviour in concert with various pointer and
+# window dynamics as they occur when a user interacts with a Tk GUI. Such
+# tests are exercised by the test script "windetect-gui.test".
+#
+
+#
+# Copyright 2020 Erik Leunissen
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+#
+# DETERMINE EXECUTION ENVIRONMENT
+#
+
+proc getScriptDir {} {
+	set fileName [info script]
+	if {$fileName eq ""} {
+		return -code error "Called [info level 0] outside the active invocation of a script."
+	}
+	while {! [catch {file readlink $fileName} result]} {
+		if {[file pathtype $result] ne "absolute"} {
+			set fileName [file  join [file dirname $fileName] $result]
+		} else {
+			set fileName $result
+		}
+	}
+	return [file dirname [file normalize $fileName]]
+}
+
+
+# determine directory names and cd into test dir
+set Dir(test) [getScriptDir]
+set Dir(install) [file dirname $Dir(test)]
+cd $Dir(test)
+
+# load test utilities
+source [file join $Dir(test) windetect-test_utils.tcl]
+
+#
+# SET GENERIC TEST PROPERTIES
+#
+getPackageInfo $Dir(install) Generic(pkgName) Generic(pkgVersion)
+set Generic(testType) unit
+
+#
+# ARGUMENT HANDLING
+#
+process_cmdline_args unit
+
+
+#
+# LOAD TEST HARNESS AND TEST UTILITIES,
+# PERFORM GENERIC TEST INITIALIZATION
+#
+package require tcltest 2.2
+namespace import -force ::tcltest::*
+
+# pass command line arguments to tcltest
+if {[array size tcltestconf] > 0} {
+	# pass command line arguments to tcltest
+	eval tcltest::configure [array get tcltestconf]
+}
+if {! [info exists ::env(TCLTEST_MASTER_SCRIPT)]} {
+	tcltest::configure -verbose {body pass error}
+}
+
+if {$testconf(-checkclean)} {
+	checkTestsClean
+}
+
+#
+# START TESTS
+#
+
+# Prevent that we inadvertently load a version of windetect
+# installed elsewhere.
+package forget windetect
+set auto_path_sav $auto_path; set auto_path $Dir(install)
+
+#
+# REQUIREMENTS
+#
+test init-1.1 {package require fails if Tk is not loaded} -setup {
+	if {[catch {package present Tk} tkVersion]} {
+		unset tkVersion
+	}
+	package forget Tk
+	set result {}
+} -body {
+	lappend result [catch {package require -exact windetect $Generic(pkgVersion)} errMsg]
+	lappend result $errMsg
+	lappend result [namespace exists ::windetect]
+} -cleanup {
+	if {[info exists tkVersion]} {
+		package provide Tk $tkVersion
+		unset tkVersion
+	}
+	unset result errMsg
+} -result [list 1 "windetect requires a running Tk application" 0]
+
+test init-1.2 {package require fails with too old Tk version} -setup {
+	if {[catch {package present Tk} tkVersion]} {
+		unset tkVersion
+	}
+	package forget Tk
+	package provide Tk 8.4
+	set result {}
+} -body {
+	lappend result [catch {package require -exact windetect $Generic(pkgVersion)} errMsg]
+	lappend result $errMsg
+	lappend result [namespace exists ::windetect]
+} -cleanup {
+	package forget Tk
+	if {[info exists tkVersion]} {
+		package provide Tk $tkVersion
+		unset tkVersion
+	}
+	unset result errMsg
+} -result [list 1 "windetect $Generic(pkgVersion) requires Tk 8.5 or newer" 0]
+
+#
+# Load Tk, with the root window withdrawn
+#
+set auto_path $auto_path_sav
+package require -exact Tk $tcl_patchLevel
+wm withdraw .
+package forget windetect
+set auto_path $Dir(install)
+
+source [file join $Dir(install) utils gn.tcl]
+namespace import gn::*
+
+
+testConstraint tkSkipsNotifyInferior [expr {! [tkWithNotifyInferior]}]
+
+#
+# Nrs. 1.50 and beyond are used for tests that may be removed in a newer version
+#
+test init-1.50 {package require fails with unsupported windowing system} -setup {
+	rename tk _tk
+	proc tk {args} {
+		if {[lindex $args 0] eq "windowingsystem"} {
+			return "any_unsupported_ws"
+		}
+		return [_tk {*}$args]
+	}
+} -body {
+	lappend result [catch {package require -exact windetect $Generic(pkgVersion)} errMsg]
+	lappend result $errMsg
+	lappend result [namespace exists ::windetect]
+} -cleanup {
+	rename tk {}
+	rename _tk tk
+	unset result errMsg
+} -result [list 1 "windetect $Generic(pkgVersion) does not support the windowing system \"any_unsupported_ws\"" 0]
+
+test init-1.51 {bypass ws restriction for unsupported windowing systems} -setup {
+	rename tk _tk
+	proc tk {args} {
+		if {[lindex $args 0] eq "windowingsystem"} {
+			return "any_unsupported_ws"
+		}
+		return [_tk {*}$args]
+	}
+	if {[info exists env(WINDETECT_NO_RESTRICT_WS)]} {
+		set sav(env) $env(WINDETECT_NO_RESTRICT_WS)
+	}
+	set env(WINDETECT_NO_RESTRICT_WS) 1
+} -body {
+	lappend result [catch {package require -exact windetect $Generic(pkgVersion)} errMsg]
+	lappend result $errMsg
+	lappend result [package present windetect]
+} -cleanup {
+	package forget windetect
+	namespace delete ::windetect
+	if {[info exists sav(env)]} {
+		set env(WINDETECT_NO_RESTRICT_WS) $sav(env)
+	} else {
+		unset env(WINDETECT_NO_RESTRICT_WS)
+	}
+	rename tk {}
+	rename _tk tk
+	unset -nocomplain errMsg sav result
+} -result [list 0 $Generic(pkgVersion) $Generic(pkgVersion)] -errorOutput "WARNING: bypassing ws restriction on explicit user request (WINDETECT_NO_RESTRICT_WS)\n"
+
+test init-2.1 {package require works} -body {
+	package require -exact windetect $Generic(pkgVersion)
+} -cleanup {
+	namespace delete ::windetect
+	package forget windetect
+} -result $Generic(pkgVersion)
+
+test exit-1.1 {leaves no traces behind} -setup {
+	package require -exact windetect $Generic(pkgVersion)
+} -body {
+	windetect::exit
+	list [namespace exists ::windetect] [catch {package present windetect}]
+} -result {0 1}
+
+#
+# The following tests require the correct loading of the package. We source
+# windetect.tcl directly to allow tracking of code coverage by TclDevKit.
+#
+source [file join $Dir(install) windetect.tcl]
+
+test callback.default-1.1 {writes to stdout} -body {
+	windetect::callback.default param1 param2 param3
+} -result "" -output "param1 param2 param3\n"
+
+test configure-1.1 {complain and make no changes with invalid # args} -body {
+	windetect::configure -delay param2 param3
+} -result "uneven # arguments" -returnCodes error
+
+test configure-1.2 {complain with invalid arguments} -body {
+	windetect::configure -invalidParam
+} -result "invalid option \"-invalidParam\"" -returnCodes error
+
+test configure-1.3 {configure returns all settings} -body {
+	windetect::configure
+} -result {-callback ::windetect::callback.default -delay 50 -wsrespite 0}
+
+test configure-1.4 {configure returns a single specific setting} -body {
+	windetect::configure -delay
+} -result 50
+
+test configure-1.5 {disallow reconfiguration if detection is on} -body {
+	windetect::instrument someTag <Enter>
+	windetect::detect on
+	windetect::configure -delay 111
+} -cleanup {
+	windetect::detect off
+	windetect::instrument someTag {}
+} -result "windetect cannot be reconfigured while detection is on" -returnCodes error
+
+test configure-1.6.1 {configure changes a single specific setting, -delay} -setup {
+	set savedValue [windetect::configure -delay]
+} -body {
+	windetect::configure -delay 41
+	windetect::configure -delay
+} -cleanup {
+	windetect::configure -delay $savedValue
+	unset savedValue
+} -result 41
+
+test configure-1.6.2 {configure complains with invalid value, -delay} -body {
+	windetect::configure -delay invalidValue
+} -result "invalid value \"invalidValue\" for option \"-delay\"" -returnCodes error
+
+test configure-1.7.1 {configure complains with invalid value, -wsrespite} -body {
+	windetect::configure -wsrespite invalidValue -delay 0
+} -result "invalid value \"invalidValue\" for option \"-wsrespite\"" -returnCodes error
+
+test configure-1.7.2 {configure changes a single specific setting, -delay} -setup {
+	set savedValue [windetect::configure -delay]
+} -body {
+	windetect::configure -delay 13
+	windetect::configure -delay
+} -cleanup {
+	windetect::configure -delay $savedValue
+	unset savedValue
+} -result 13
+
+test configure-1.7.3 {configure changes multiple settings with one invocation} -setup {
+	foreach name {callback delay wsrespite} {
+		set savedValue($name) [windetect::configure -$name]
+	}
+} -body {
+	windetect::configure -wsrespite 13 -delay 0 -callback dummy
+	windetect::configure
+} -cleanup {
+	windetect::configure -callback $savedValue(callback) -delay $savedValue(delay) \
+			-wsrespite $savedValue(wsrespite)
+	unset -nocomplain name savedValue
+} -result "-callback dummy -delay 0 -wsrespite 13"
+
+test instrument-1.0 {too many arguments} -body {
+	windetect::instrument arg1 arg2 arg3
+} -result {wrong # args: should be "windetect::instrument ?bindtag? ?eventlist?"} -returnCodes error
+
+test instrument-1.1 {invalid value for argument eventlist} -body {
+	windetect::instrument someTag aRbItRaRyRuBbIsH
+} -result {invalid value "aRbItRaRyRuBbIsH" for argument "eventlist"} -returnCodes error
+
+test instrument-1.2 {duplicate event value for argument eventlist} -body {
+	windetect::instrument someTag {<Leave> <Destroy> <Leave>}
+} -result {duplicate event "<Leave>" for argument "eventlist"} -returnCodes error
+
+test instrument-2.1 {reconfiguration not allowed if detection is on} -setup {
+	windetect::instrument someTag <Enter>
+	windetect::detect on
+} -body {
+	windetect::instrument someTag <Leave>
+} -cleanup {
+	windetect::detect off
+	windetect::instrument someTag {}
+} -result {reconfiguring instrumentation is not allowed while detection is on} -returnCodes error
+
+test instrument-3.1 {reconfigure, asterisk for argument eventlist} -body {
+	windetect::instrument someTag *
+	windetect::instrument someTag
+} -result {<Enter> <Leave> <Destroy>} -cleanup {
+	windetect::instrument someTag {}
+}
+
+test instrument-3.2 {reconfigure, non-empty event list} -body {
+	windetect::instrument someTag <Leave>
+	windetect::instrument someTag
+} -result "<Leave>" -cleanup {
+	windetect::instrument someTag {}
+}
+
+test instrument-3.3 {reconfigure, empty event list} -setup {
+	windetect::instrument someTag <Leave>
+} -body {
+	windetect::instrument someTag {}
+	windetect::instrument someTag
+} -result ""
+
+test instrument-4.1 {query, pass binding tag argument, return list of events} -setup {
+	windetect::instrument all {<Leave> <Destroy>}
+} -body {
+	windetect::instrument all
+} -result {<Leave> <Destroy>} -cleanup {
+	windetect::instrument all {}
+}
+
+test instrument-4.2 {query, without binding tag argument, return full instrumentation dictionary} -setup {
+	windetect::instrument all *
+	windetect::instrument someTag *
+} -body {
+	windetect::instrument
+} -result {all {<Enter> <Leave> <Destroy>} someTag {<Enter> <Leave> <Destroy>}} -cleanup {
+	windetect::instrument someTag {}
+	windetect::instrument all {}
+}
+
+test instrument-4.3 {query, nothing instrumented} -body {
+	windetect::instrument
+} -result {}
+test getInstrEventsForWindow-1.1 {returns empty list if nothing instrumented} -body {
+	windetect::getInstrEventsForWindow .
+} -result {}
+
+test getInstrEventsForWindow-1.2 {returns a list without duplicates} -setup {
+	windetect::instrument all <Enter>
+	windetect::instrument someTag <Leave>
+	windetect::instrument anotherTag [list <Enter> <Destroy>]
+	set tags [bindtags .]
+	bindtags . [linsert $tags end anotherTag]
+} -body {
+	windetect::getInstrEventsForWindow .
+} -result {<Enter> <Destroy>} -cleanup {
+	bindtags . $tags
+	foreach tag {anotherTag someTag all} {
+		windetect::instrument $tag {}
+	}
+	unset tag tags
+}
+
+test detect-1.1 {complain and make no changes with invalid # args} -body {
+	windetect::detect param1 param2 param3
+} -result "wrong # args: should be \"windetect::detect ?state?\"" -returnCodes error
+
+test detect-1.2 {complain with invalid arguments} -body {
+	windetect::detect invalidParam
+} -result {invalid value "invalidParam" for argument "state"} -returnCodes error
+
+test detect-2.1 {return state if no arguments are passed} -body {
+	windetect::detect
+} -result "off"
+
+test detect-2.2 {on, return error if nothing is instrumented} -body {
+	windetect::detect on
+} -result {nothing is instrumented} -returnCodes error
+
+test detect-2.3 {on, instrumented bindtags are activated} -setup {
+	windetect::instrument someTag {<Leave> <Destroy>}
+} -body {
+	windetect::detect on
+	set result [list [string match *::windetect::handleDetectionEvent* [bind someTag <Enter>]] \
+			[string match *::windetect::handleDetectionEvent* [bind someTag <Leave>]] \
+			[string match *::windetect::handleWinDestruction* [bind someTag <Destroy>]]]
+	if {! [tkWithNotifyInferior]} {
+		lappend result [string match *::windetect::handleGrabTrace* [trace info execution grab]]
+	}
+	set result
+} -result [expr {[tkWithNotifyInferior]?"0 1 1":"0 1 1 1"}] -cleanup {
+	unset -nocomplain result
+	windetect::detect off
+	windetect::instrument someTag {}
+}
+
+test detect-2.4 {on, original bindings are unaffected along those of windetect} -setup {
+	bind someTag <Enter> someScript1
+	bind someTag <Leave> someScript2
+	bind someTag <Destroy> someScript3
+} -body {
+	windetect::instrument someTag *
+	windetect::detect on; # activates configured detection bindings
+	set result [list]
+	lappend result [string match *someScript1*::windetect::handleDetectionEvent* [bind someTag <Enter>]]
+	lappend result [string match *someScript2*::windetect::handleDetectionEvent* [bind someTag <Leave>]]
+	lappend result [string match *someScript3*::windetect::handleWinDestruction* [bind someTag <Destroy>]]
+	set result
+} -result {1 1 1} -cleanup {
+	windetect::detect off
+	windetect::instrument someTag {}
+	foreach event {<Enter> <Leave> <Destroy>} {
+		bind someTag $event {}
+	}
+	unset -nocomplain event result
+}
+
+test detect-2.5 {off, original bindings are unaffected} -setup {
+	bind someTag <Enter> someScript
+	windetect::instrument someTag *
+	windetect::detect on; # activates configured detection bindings
+} -body {
+	windetect::detect off
+	list [string match *::windetect::handleDetectionEvent* [bind someTag <Enter>]] [string match *someScript* [bind someTag <Enter>]]
+} -result {0 1} -cleanup {
+	windetect::instrument someTag {}
+	bind someTag <Enter> {}
+}
+
+#
+# TEST SETUP FOR WINDOW DETECTION
+#
+
+# Create a basic Tk window setup with a single toplevel window containing
+# a single Tk widget, and the mouse pointer residing inside the toplevel.
+window_setup unit
+
+# Configure windetect. Use a callback command that records the parameters
+# passed to the callback command.
+windetect::configure -callback logCallbackArgs -delay $testconf(-delay)
+windetect::instrument all *
+waitForReporting.init
+if {$testconf(-detectiondetails) || $testconf(-timing)} {
+	puts <test_setup1_done>\n
+}
+
+test detect-3.1 {activating detection mode results in an initial reporting} -setup {
+	assert {[windetect::detect] eq "off"}
+} -body {
+	windetect::detect on
+	waitForReporting 1 1; # initial reporting
+} -cleanup {
+	windetect::detect off
+	unset -nocomplain callbackArgs
+} -result 0
+
+#
+# EVENT HANDLERS AND TRACE HANDLERS
+#
+windetect::detect on
+waitForReporting 1 1
+unset -nocomplain callbackArgs
+if {$testconf(-detectiondetails) || $testconf(-timing)} {
+	puts <test_setup2_done>\n
+}
+
+test handleGrabTrace-1.1 {grab trace handler is triggered upon grab command} -constraints tkSkipsNotifyInferior -setup {
+	proc setSignal {args} {
+		set ::__signal 1
+	}
+	trace add execution windetect::handleGrabTrace enter setSignal
+	windetect::detect on
+} -body {
+	set __signal -1
+	set afterID [after 1000 {set __signal 0}]
+	after idle {grab .}
+	vwait __signal
+	after cancel $afterID
+	set __signal
+} -result 1 -cleanup {
+	windetect::detect off
+	grab release .
+	update idletasks
+	trace remove execution windetect::handleGrabTrace enter setSignal
+	unset -nocomplain __signal afterID callbackArgs
+	rename setSignal {}
+}
+
+test handleGrabTrace-1.2 {fakes a <Leave> event upon [grab set] (pointerWin = container = parent of grabWin), leading to [report]} -constraints tkSkipsNotifyInferior -setup {
+	assert {![info exists callbackArgs]}
+} -body {
+	windetect::handleGrabTrace {grab .f} 0 dummyTraceArgs
+	waitForReporting 1 1
+	set callbackArgs
+} -result $anyWindowAnywhere -match regexp -cleanup {
+	unset -nocomplain callbackArgs
+}
+
+test handleGrabTrace-1.3 {fakes an <Enter> event upon [grab release] (pointerWin = container = parent of grabWin), leading to [report]} -constraints tkSkipsNotifyInferior -setup {
+	assert {![info exists callbackArgs]}
+} -body {
+	windetect::handleGrabTrace {grab release .f} 0 dummyTraceArgs
+	waitForReporting 1 1
+	set callbackArgs
+} -result $anyWindowAnywhere -match regexp -cleanup {
+	unset -nocomplain callbackArgs
+}
+
+test handleGrabTrace-1.4 {doesn't fake a detection event upon [grab current]} -constraints tkSkipsNotifyInferior -body {
+	windetect::handleGrabTrace {grab current} 0 dummyTraceArgs
+	waitForReporting 1 1 0 [expr {$testconf(-delay) + 10}]; # check that no detection events are reported
+} -result -1 -cleanup {
+	unset -nocomplain callbackArgs
+}
+
+#
+# The procs "handleDetectionEvent" and "report" don't operate in isolation
+# and cannot be sensibly tested in isolation. The following tests invoke
+# "handleDetectionEvent", and let the expected test result be the outcome
+# of the reporting callback invoked by "report".
+#
+
+test handleDetectionEvent-1 {invokes the reporting callback upon <Enter>} -constraints tkSkipsNotifyInferior -setup {
+	assert {![info exists callbackArgs]}
+} -body {
+	windetect::handleDetectionEvent <Enter> NotifyNormal NotifyAncestor 399 401 .f
+	waitForReporting 1 1
+	set callbackArgs
+} -result ".f 399 401" -cleanup {
+	unset -nocomplain callbackArgs
+}
+
+test handleDetectionEvent-2 {invokes the reporting callback upon <Leave>} -constraints tkSkipsNotifyInferior -setup {
+	assert {![info exists callbackArgs]}
+} -body {
+	windetect::handleDetectionEvent <Leave> NotifyNormal NotifyAncestor 398 402 .f
+	waitForReporting 1 1
+	set callbackArgs
+} -result ". 398 402" -cleanup {
+	unset -nocomplain callbackArgs
+}
+
+test handleDetectionEvent-3 {invokes the reporting callback upon <Destroy>} -constraints tkSkipsNotifyInferior -setup {
+	assert {![info exists callbackArgs]}
+} -body {
+	windetect::handleDetectionEvent <Destroy> NA NA 397 403 .f
+	waitForReporting 1 1
+	set callbackArgs
+} -result ". 397 403" -cleanup {
+	unset -nocomplain callbackArgs
+}
+
+#
+# END OF TESTS, clean up and show results
+#
+windetect::exit
+set auto_path $auto_path_sav
+
+set rv [cleanupTests.return]
+exit $rv
+
+# EOF

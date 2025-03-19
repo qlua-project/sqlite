@@ -1,0 +1,100 @@
+#! /bin/sh
+# If executed as a shell script, the next line replaces the shell \
+exec tclsh "$0" ${1+"$@"}
+
+#
+# This test script holds tests that exercise the behaviour of windetect, where
+# a user interacts with a GUI. Clicking mouse buttons and moving the mouse
+# pointer around the GUI are simulated with programmatically generated events.
+#
+# Also used by any tkwintrack package installed alongside windetect.
+#
+
+#
+# Copyright 2020 Erik Leunissen
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+#
+# DETERMINE EXECUTION ENVIRONMENT
+#
+
+proc getScriptDir {} {
+	set fileName [info script]
+	if {$fileName eq ""} {
+		return -code error "Called [info level 0] outside the active invocation of a script."
+	}
+	while {! [catch {file readlink $fileName} result]} {
+		set fileName $result
+	}
+	return [file dirname [file normalize $fileName]]
+}
+
+
+# determine directory names and cd into test dir
+set Dir(test) [getScriptDir]
+set Dir(install) [file dirname $Dir(test)]
+cd $Dir(test)
+
+#
+# GENERIC TEST INITALIZATION/CONFIGURATION
+#
+source [file join $Dir(test) windetect-gui-prologue.tcl]
+
+#
+# CREATE AND CONFIGURE TEST WIDGETS
+#
+window_setup gui
+
+#
+# LOAD THE PACKAGE AND CONFIGURE IT FOR THESE TESTS
+#
+# We load the package source directly (i.e. not through [package require]
+# to allow tracking of code coverage by TclDevKit.
+#
+source [file join $Dir(install) windetect.tcl]
+::windetect::configure -callback logReporting -delay $testconf(-delay) -wsrespite $testconf(-wsrespite)
+::windetect::instrument all *
+
+#
+# INITIALIZE MONITORING
+#
+waitForReporting.init
+if {$testconf(-detectiondetails) || $testconf(-timing)} {
+	puts <test_setup_done>\n
+}
+
+#
+# Source test scripts for a specific Tk variant with respect to the
+# handling of binding scripts for crossing events with detail field
+# NotifyInferior. See also the file README.ni0-ni1 in the top-level
+# directory of this distribution.
+#
+source [file join $Dir(test) constraints.tcl]
+source [file join $Dir(test) gui_tests-[expr {[tkWithNotifyInferior]?"ni1":"ni0"}].tcl]
+
+#
+# END OF TESTS, clean up and show results
+#
+windetect::exit
+
+set rv [cleanupTests.return]
+
+if {$rv > 0} {
+	puts "\nSome tests failed. Note that this may very well be due to latency of windowing system notifications, which has been described extensively in the reference document. Please see there for when to report failures of this gui-integration test."
+}
+
+exit $rv
+
+# EOF

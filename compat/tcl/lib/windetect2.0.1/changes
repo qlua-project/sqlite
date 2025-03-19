@@ -1,0 +1,55 @@
+User-visible changes to windetect in between releases:
+
+--- 24-Dec-2020  Release 1.0b1 ---
+
+* Corrected initial notification by windetect.test
+* Some documentation improvements (textual and lay-out of the PDF document)
+
+--- 24-Feb-2021  Release 1.0.0 ---
+
+* (enhancement) new command "instrument", which facilitates configuration
+  of the internal detection mechanism.
+* (enhancement) remove implicit default instrumentation upon switching
+  detection on. This introduces an
+
+      *** INCOMPATIBILITY ***
+
+  with previous releases. Instrumenting the GUI is left to the user as an
+  explicit programming step, employing the new "instrument" command.
+* (enhancement) refrain from reporting virtual crossings
+* (enhancement) new option -wsrespite to address timing issues with the
+  windowing system when using a zero reporting delay, thereby making the
+  detection of the new pointer window much more accurate.
+* (enhancement) adapt to Tk invoking binding scripts for events with detail
+  field NotifyInferior (since Tk8.6.15)
+* (enhancement) adapt to several incompatibilities introduced by Tcl9.0.0
+* (bug fix) correct initial reporting when detection is activated.
+* (bug fix) correct reporting of the new pointer window upon destruction of
+  the old pointer window when using a zero reporting delay.
+* (bug fix) correct reporting of the new pointer window when moving the mouse
+  pointer outside a grabbed toplevel window.
+* (bug fix) correct reporting of the new pointer window upon destruction of
+  the old pointer window if a grab is in effect and the mouse pointer is
+  outside the grab subtree.
+* (bug fix) correct reporting of the new pointer window when a grab is being
+  set or released, and the mouse pointer resides outside the grab subtree.
+* (bug fix) correct pointer coordinates reported when a grab is being set or
+  released.
+* (bug fix) correct check for Tk version requirement
+* (test enhancement) add unit tests for private event and trace handlers.
+* (test enhancement) use a proper test file for gui-integration tests,
+  thereby removing the dependency on package tkwintrack.
+* (test enhancement) make gui-integration tests insensitive to variability
+  among windowing systems and window managers w.r.t. timeliness of event
+  notifications, thereby considerably speeding up test execution.
+* (test enhancement) add various inspection facilities to the test scripts.
+* Substantial documentation enhancements, especially regarding instrumentation,
+  limitations, testing and windowing system particulars.
+
+--- 17-Sep-2024  Release 2.0.0 ---
+
+* (doc fix) correct Tk release nr. where invoking binding scripts for events
+  with detail field NotifyInferior was fixed (#5)
+* (test fix) remove inappropriate constraint from tests pw_destroy-4.[12] (#6)
+
+--- 22-Sep-2024  Release 2.0.1 ---

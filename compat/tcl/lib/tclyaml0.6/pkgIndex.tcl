@@ -1,0 +1,2 @@
+if {![package vsatisfies [package provide Tcl] 9.0]} {return}
+package ifneeded tclyaml 0.6 "[list proc __critcl_load__ {dir} { ;     source [file join $dir critcl-rt.tcl] ;     set path [file join $dir [::critcl::runtime::MapPlatform]] ;     set ext [info sharedlibextension] ;     set lib [file join $path "tclyaml$ext"] ;     load $lib Tclyaml ;     ::critcl::runtime::Fetch $dir policy_1.tcl ;     package provide tclyaml 0.6 ;     catch {rename __critcl_load__ {}}}] ; [list __critcl_load__ $dir]"
