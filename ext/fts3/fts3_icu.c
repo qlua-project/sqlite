@@ -19,10 +19,14 @@
 #include <string.h>
 #include "fts3_tokenizer.h"
 
+#ifdef ICU_WIN10
+#include <icu.h>
+#else
 #include <unicode/ubrk.h>
 #include <unicode/ucol.h>
 #include <unicode/ustring.h>
 #include <unicode/utf16.h>
+#endif
 
 typedef struct IcuTokenizer IcuTokenizer;
 typedef struct IcuCursor IcuCursor;

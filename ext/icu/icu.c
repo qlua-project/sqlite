@@ -33,10 +33,14 @@
  || defined(SQLITE_ENABLE_ICU_COLLATIONS)
 
 /* Include ICU headers */
+#ifdef ICU_WIN10
+#include <icu.h>
+#else
 #include <unicode/utypes.h>
 #include <unicode/uregex.h>
 #include <unicode/ustring.h>
 #include <unicode/ucol.h>
+#endif
 
 #include <assert.h>
 

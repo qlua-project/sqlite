@@ -1048,7 +1048,11 @@ ICULIBDIR = $(ICUDIR)\lib
 !ENDIF
 
 !IFNDEF LIBICU
+!IF $(FOR_WIN10)!=0
+LIBICU = icu.lib
+!ELSE
 LIBICU = icuuc.lib icuin.lib
+!ENDIF
 !ENDIF
 
 # This is the command to use for tclsh - normally just "tclsh", but we may
@@ -1194,8 +1198,13 @@ TCC = $(TCC) -DSQLITE_ENABLE_ICU=1
 RCC = $(RCC) -DSQLITE_ENABLE_ICU=1
 TCC = $(TCC) -I$(TOP)\ext\icu
 RCC = $(RCC) -I$(TOP)\ext\icu
+!IF $(FOR_WIN10)!=0
+TCC = $(TCC) -DICU_WIN10=1
+RCC = $(RCC) -DICU_WIN10=1
+!ELSE
 TCC = $(TCC) -I$(ICUINCDIR)
 RCC = $(RCC) -I$(ICUINCDIR)
+!ENDIF
 !ENDIF
 # <</mark>>
 
@@ -1326,7 +1335,9 @@ LTLIBS = $(LTLIBS) $(ZLIBLIB)
 # If ICU support is enabled, add the linker options for it.
 #
 !IF $(USE_ICU)!=0
+!IF $(FOR_WIN10)==0
 LTLIBPATHS = $(LTLIBPATHS) /LIBPATH:$(ICULIBDIR)
+!ENDIF
 LTLIBS = $(LTLIBS) $(LIBICU)
 !ENDIF
 # <</mark>>
